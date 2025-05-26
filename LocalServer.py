@@ -4,6 +4,7 @@ sys.path.append(R".\SimplePype")
 
 from ClientMessage import ClientMessage
 from LocalClient import LocalClient
+from Functional import _register_handle, _unregister_handle, _get_handle
 
 import threading
 from multiprocessing import Pipe
@@ -11,10 +12,7 @@ from multiprocessing import Pipe
 class LocalServer:
     def __init__(self):
         # Create two unidirectional pipes: server->client and client->server
-        # Pipe returns (recv_end, send_end) when duplex=False
-        # For server->client: server sends via send_end, client receives via recv_end
         self._pipe_out_client, self._pipe_out_server = Pipe(duplex=False)
-        # For client->server: client sends via send_end, server receives via recv_end
         self._pipe_in_server, self._pipe_in_client = Pipe(duplex=False)
 
         self.NewMessage = []  # Handlers: (sender, ClientMessage)
@@ -49,16 +47,28 @@ class LocalServer:
         self._pipe_out_server.send(msg)
 
     def GetPipeHandles(self):
-        return (self._pipe_out_client, self._pipe_in_client)
+        """
+        Returns a tuple of string handles: (client_recv_handle, client_send_handle)
+        """
+        recv_id = _register_handle(self._pipe_out_client)
+        send_id = _register_handle(self._pipe_in_client)
+        return recv_id, send_id
 
-    def DisposeLocalCopyOfClientHandle(self):
-        # No-op in Python implementation
-        pass
+    def DisposeLocalCopyOfClientHandle(self, recv_id, send_id):
+        _unregister_handle(recv_id)
+        _unregister_handle(send_id)
 
-    def GetClient(self):
-        client = LocalClient(self._pipe_out_client, self._pipe_in_client)
-        # Notify server when client is ready to dispose handles
-        client.HandleDisposeReady.append(lambda sender: self.DisposeLocalCopyOfClientHandle())
+    def GetClient(self, recv_handle_id: str = None, send_handle_id: str = None):
+        """
+        Create LocalClient from string handle IDs. If none provided, use fresh GetPipeHandles.
+        """
+        if recv_handle_id is None or send_handle_id is None:
+            recv_handle_id, send_handle_id = self.GetPipeHandles()
+        conn_recv = _get_handle(recv_handle_id)
+        conn_send = _get_handle(send_handle_id)
+        client = LocalClient(recv_handle_id, send_handle_id, conn_recv, conn_send)
+        # Once client is set up, server can drop its local copy
+        client.HandleDisposeReady.append(lambda sender: self.DisposeLocalCopyOfClientHandle(recv_handle_id, send_handle_id))
         return client
 
     def Dispose(self):
@@ -80,3 +90,5 @@ class LocalServer:
                 h(self, *args)
             except Exception:
                 pass
+
+

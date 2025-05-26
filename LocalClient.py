@@ -3,12 +3,15 @@ import sys
 sys.path.append(R".\SimplePype")
 
 from ServerMessage import ServerMessage
+from Functional import _unregister_handle
 import threading
 
 class LocalClient:
-    def __init__(self, handle_in, handle_out):
-        self._pipe_in = handle_in
-        self._pipe_out = handle_out
+    def __init__(self, recv_id: str, send_id: str, conn_recv, conn_send):
+        self._recv_id = recv_id
+        self._send_id = send_id
+        self._pipe_in = conn_recv
+        self._pipe_out = conn_send
         self.NewMessage = []  # Handlers: (sender, ServerMessage)
         self.ClientMessage = []  # Handlers: (sender, message:str)
         self.HandleDisposeReady = []  # Handlers: (sender)
@@ -20,7 +23,7 @@ class LocalClient:
         return not (self._pipe_in.closed or self._pipe_out.closed)
 
     def Listen(self):
-        # Notify server that handles can be disposed
+        # Tell server it can dispose registry entries
         self._invoke_event(self.HandleDisposeReady)
         if not self.IsConnected:
             raise RuntimeError("Client is not connected!")
@@ -48,6 +51,9 @@ class LocalClient:
         if self._listen_thread:
             self._listen_thread.join()
         self._pipe_out.close()
+        # Also clean up registry entries
+        _unregister_handle(self._recv_id)
+        _unregister_handle(self._send_id)
 
     def __enter__(self):
         return self
