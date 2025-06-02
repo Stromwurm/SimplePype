@@ -1,69 +1,64 @@
 import time
 import sys
-sys.path.append(R".\SimplePype")
+import io
+import os
+sys.path.append(R".\ServerMessage.py")
 
-from ServerMessage import ServerMessage
-from Functional import _unregister_handle
+from .ServerMessage import ServerMessage
+
 import threading
+import msvcrt
 
 class LocalClient:
-    def __init__(self, recv_id: str, send_id: str, conn_recv, conn_send):
-        self._recv_id = recv_id
-        self._send_id = send_id
-        self._pipe_in = conn_recv
-        self._pipe_out = conn_send
-        self.NewMessage = []  # Handlers: (sender, ServerMessage)
-        self.ClientMessage = []  # Handlers: (sender, message:str)
-        self.HandleDisposeReady = []  # Handlers: (sender)
-        self._stop_event = threading.Event()
-        self._listen_thread = None
+
+    def __init__(self, server_in: int, server_out: int):
+
+        hIn = msvcrt.open_osfhandle(server_in, os.O_TEXT)
+        hOut = msvcrt.open_osfhandle(server_out, os.O_TEXT)
+        self.pipe_out = open(hIn, 'w', closefd=False, newline="\n", encoding="UTF-8")
+        self.pipe_in = open(hOut, 'r', closefd=False, newline="\n", encoding="UTF-8")
+
+        self.NewMessage = []
+        self.ClientMessage = []
+        self.stop_event = threading.Event()
+        self.listen_thread = None
 
     @property
     def IsConnected(self):
-        return not (self._pipe_in.closed or self._pipe_out.closed)
+        return not (self.pipe_out.closed or self.pipe_in.closed)
+    
+    def _ClientMessage(self, msg: str) -> None:
+        for handlers in self.ClientMessage:
+            handlers(f"CLIENT SAID: {msg}")
+
+    def _NewMessage(self, msg: str) -> None:
+        srvmsg = ServerMessage(msg)
+        for h in self.NewMessage:
+            h(srvmsg)
 
     def Listen(self):
-        # Tell server it can dispose registry entries
-        self._invoke_event(self.HandleDisposeReady)
-        if not self.IsConnected:
-            raise RuntimeError("Client is not connected!")
-        def _run():
-            self._invoke_event(self.ClientMessage, "Client listening...")
-            while not self._stop_event.is_set():
-                try:
-                    if self._pipe_in.poll():
-                        msg = self._pipe_in.recv()
-                        smsg = ServerMessage(msg)
-                        self._invoke_event(self.NewMessage, smsg)
-                except Exception as ex:
-                    self._invoke_event(self.ClientMessage, f"CLIENT {ex}")
+
+        while (not self.IsConnected):
+            self._ClientMessage("Not connected to the server...")
+            time.sleep(0.25)
+        
+        def run():
+            self._ClientMessage("Client connected, listening...")
+
+            while (not self.stop_event.is_set()):
+
                 time.sleep(0.025)
-        self._listen_thread = threading.Thread(target=_run, daemon=True)
-        self._listen_thread.start()
 
-    def Write(self, msg: str):
-        if not self.IsConnected:
-            raise RuntimeError("Client is not connected!")
-        self._pipe_out.send(msg)
+                try:
+                    pipe_content = self.pipe_in.readline()
+                    self._NewMessage(pipe_content)
 
-    def Dispose(self):
-        self._stop_event.set()
-        if self._listen_thread:
-            self._listen_thread.join()
-        self._pipe_out.close()
-        # Also clean up registry entries
-        _unregister_handle(self._recv_id)
-        _unregister_handle(self._send_id)
+                except Exception as ex:
+                    self._ClientMessage(str(ex))
+        
+        self.listen_thread = threading.Thread(target=run, daemon=True)
+        self.listen_thread.start()
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.Dispose()
-
-    def _invoke_event(self, handlers, *args):
-        for h in handlers:
-            try:
-                h(self, *args)
-            except Exception:
-                pass
+    def Write(self, msg: str) -> None:
+        self.pipe_out.write(msg)
+        self.pipe_out.flush()
